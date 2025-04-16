@@ -231,7 +231,7 @@ plt.close()
 spectrum, freq = calc_spectrum(electric_field, sample_rate, plot="semilogx", xlim=None, step=1)
 
 # Pulse propagation of a distance of z:
-z = 50e3 # meters.
+z = 100e3 # meters.
 
 wavenumber_freq = approx_wavenumber(freq, k, freq0, window=10e12)
 propagator = propagation_operator(z=z, k=wavenumber_freq)
@@ -256,8 +256,14 @@ print(f"Pulse std deviation after propagation of z={z} meters: \t", z_propagated
 print(f"Pulse FWHM after propagation of z={z} meters: \t\t", z_propagated_pulse_FWHM, " seconds.")
 
 # Train of pulses:
+import sys
+if len(sys.argv) > 1:
+    num_bits = int(sys.argv[1])
+else:
+    # num_bits = 16
+    sys.exit()
 delay = 100e-12 # seconds.
-num_pulses = 16
+num_pulses = num_bits
 bits = [1 if b >= .25 else 0 for b in np.random.uniform(size=num_pulses)]
 print(bits)
 num_points = int(1e6)
