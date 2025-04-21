@@ -3,6 +3,8 @@ import scipy as sp
 import scipy.constants as cts
 import matplotlib.pyplot as plt
 
+from utils import std2fwhm, fwhm2std, calc_pdf_mean, calc_pdf_std
+import pulse
 
 # Pulse temporal shape:
 def gaussian_pulse(time, std, mean=0.0):
@@ -71,14 +73,6 @@ def calc_spectrum(signal, sample_rate, plot="linear", step=5, xlim=(1.90e14, 1.9
         plt.close()
     return spectrum, freq
 
-# Helper functions:
-def find_nearest(array, value):
-    idx = np.searchsorted(array, value, side="left")
-    if idx > 0 and (idx == len(array) or math.fabs(value - array[idx-1]) < math.fabs(value - array[idx])):
-        return array[idx-1]
-    else:
-        return array[idx]
-
 # Functions for pulse propagation:
 def taylor_approx(span, coeffs, center=0.0):
     """Calculate the Taylor expansion over a span given the coefficients.
@@ -107,7 +101,7 @@ def taylor_approx(span, coeffs, center=0.0):
         approx += ci*(span-center)**ni / sp.special.factorial(ni)
     return approx
 
-def approx_wavenumber(freq, kn, center_freq, window=None, ang_freq=True, plot=True):
+def approx_wavenumber(freq, kn, center_freq, window=None, ang_freq=True, plot=False):
     """Calculate the Taylor expansion of $k(\\omega)$.
     Frequency may be linear or angular, provided the coefficients are alike.
     Alternatively, the parameter ang_freq converts linear frequency to angular
@@ -172,51 +166,41 @@ def propagation_operator(z, k):
     """
     return np.exp(-1j*np.array(k)*z)
 
-def propagate_pulse(freq, spectrum, operator):
+def time_shift_operator(frequency, t0, ang_freq=False):
+    """Time shifting operator (acts on frequency domain).
+    Useful for retrieving the pulse centered at a specific time.
+    Usually we want t0 = z/vg.
+    """
+    if ang_freq:
+        ang_const = 1
+    else:
+        ang_const = 2.0*np.pi
+    return np.exp(1j*ang_const*frequency*t0)
+
+def propagate_pulse(freq, spectrum, operator, time_shift=None):
     propagation_on_freq_domain = spectrum * operator
+    if time_shift is not None:
+        propagation_on_freq_domain *= time_shift_operator(freq, time_shift)
     propagation_on_time_domain = sp.fft.ifft(
         sp.fft.fftshift(propagation_on_freq_domain))
     time = sp.fft.fftfreq(len(freq), d=freq[1]-freq[0])
     return sp.fft.ifftshift(propagation_on_time_domain), sp.fft.ifftshift(time)
 
-def calc_pdf_mean(x, f, normalized=False, equidistant_points=True):
-    if not equidistant_points:
-        raise NotImplementedError()
-    x, pdf = np.array(x), np.array(f)
-    dx = x[1] - x[0]
-    if not normalized:
-        norm_c = pdf.sum() * dx
-        pdf /= norm_c
-    return (pdf * x * dx).sum()
-
-def calc_pdf_std(x, f, normalized=False, equidistant_points=True, **kwargs):
-    if not equidistant_points:
-        raise NotImplementedError()
-    x, pdf = np.array(x), np.array(f)
-    dx = x[1] - x[0]
-    if not normalized:
-        norm_c = pdf.sum() * dx
-        pdf /= norm_c
-    if "mean" in kwargs:
-        mean = kwargs["mean"]
-    else:
-        mean = calc_pdf_mean(x, pdf, normalized=True)
-    variance = ( pdf * dx * (x-mean)**2 ).sum()
-    return np.sqrt(variance)
 
 # Parameters:
 wavelength = 1.55e-6 # meters;
-freq0 = cts.c/wavelength # Hertz;
+freq0 = cts.lambda2nu(wavelength) # Hertz;
 w0 = 2*np.pi*freq0
 pulse_FWHM = 20e-12  # seconds;
-pulse_std = pulse_FWHM / (2*np.sqrt(2*np.log(2)))
+pulse_std = fwhm2std(pulse_FWHM)
 k = np.array([6.0e6, 5.0e3, -2.0e-2]) * np.array([1.0, 1e-12, 1e-24]) # rad/m; s/m; s^2/m.
 
+
 # Calculating the electric field:
-npts = int(2e7)
-ti = -5000.0e-12 # seconds;
-tf = +5000.0e-12 # seconds;
-time = np.linspace(ti, tf, npts) # , dtype=np.float32)
+npts = int(4e7)
+ti = -1000e-12 # seconds; 5 nanometros
+tf = +1000e-12 # seconds;
+time = np.linspace(ti, tf, npts) #, dtype=np.float32)
 sample_rate = time[1] - time[0] # seconds;
 pulse_shape = np.array(gaussian_pulse(time, pulse_std))
 print(type(pulse_shape[0]))
@@ -228,14 +212,18 @@ plt.show()
 plt.close()
 
 # Pulse spectrum:
-spectrum, freq = calc_spectrum(electric_field, sample_rate, plot="semilogx", xlim=None, step=1)
+spectrum, freq = calc_spectrum(electric_field, sample_rate, plot="linear", xlim=None, step=4)
 
 # Pulse propagation of a distance of z:
-z = 100e3 # meters.
+z = 20e3 # meters.
+vg = 1/k[1]
+time_delay = z/vg
+print(f"Pulse time delay after propagation of z = {z} meters: \t\t {time_delay} seconds.")
 
-wavenumber_freq = approx_wavenumber(freq, k, freq0, window=10e12)
+
+wavenumber_freq = approx_wavenumber(2*np.pi*freq, k, 2*np.pi*freq0, window=100e12, plot=False)
 propagator = propagation_operator(z=z, k=wavenumber_freq)
-pulse, time = propagate_pulse(freq, spectrum, propagator)
+pulse, time = propagate_pulse(freq, spectrum, propagator, time_delay)
 
 # Plotting the pulse's temporal shape after a propagation of z:
 plt.plot(time, np.abs(pulse)**1)
@@ -254,21 +242,3 @@ z_propagated_pulse_FWHM = 2.0*np.sqrt(2.0*np.log(2.0)) * z_propagated_pulse_std
 print(f"Pulse mean after propagation of z={z} meters: \t\t", z_propagated_pulse_mean, " seconds.")
 print(f"Pulse std deviation after propagation of z={z} meters: \t", z_propagated_pulse_std, " seconds.")
 print(f"Pulse FWHM after propagation of z={z} meters: \t\t", z_propagated_pulse_FWHM, " seconds.")
-
-# Train of pulses:
-import sys
-if len(sys.argv) > 1:
-    num_bits = int(sys.argv[1])
-else:
-    # num_bits = 16
-    sys.exit()
-delay = 100e-12 # seconds.
-num_pulses = num_bits
-bits = [1 if b >= .25 else 0 for b in np.random.uniform(size=num_pulses)]
-print(bits)
-num_points = int(1e6)
-train, pulses, time = train_of_pulses(z_propagated_pulse_std, delay, num_pulses, num_points, bits=bits)
-for pulse in pulses:
-    plt.plot(time, pulse, ":")
-plt.plot(time, train, "k--", linewidth=1.0, alpha=.75)
-plt.show()
